@@ -1,0 +1,11 @@
+{
+  "clip": "2026-09-21-calf-raise-01.mov",
+  "exercise": "calf-raise",
+  "subject": "s01",
+  "camera": { "position": "sagittal-left", "height_cm": 30, "distance_cm": 250 },
+  "footwear": "barefoot",
+  "lighting": "indoor-daylight",
+  "background": "plain-wall",
+  "device": "iPhone",
+  "recorded_at": "2026-09-21"
+}

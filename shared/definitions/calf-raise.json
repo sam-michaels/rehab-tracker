@@ -1,0 +1,17 @@
+{
+  "id": "calf-raise",
+  "version": 1,
+  "name": "Calf raise (left, sagittal view)",
+  "keypoints": [13, 15, 17, 18, 19],
+  "measured_angle": { "segment_a": [15, 13], "segment_b": [19, 17] },
+  "counting_signal": { "kind": "keypoint_y", "keypoint": 19 },
+  "filter": {
+    "median_window": 5,
+    "one_euro": { "min_cutoff": 1.0, "beta": 0.007, "d_cutoff": 1.0 },
+    "min_confidence": 0.3,
+    "max_gap_s": 0.25
+  },
+  "rep_thresholds": { "enter": 0.8, "exit": 0.3 },
+  "out_of_plane": { "foot": [19, 17], "shank": [13, 15], "tolerance": 0.15 },
+  "rules": []
+}

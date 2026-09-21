@@ -1,0 +1,25 @@
+# JS / Expo
+node_modules/
+.expo/
+app/ios/
+app/android/
+*.tsbuildinfo
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+
+# Model artifacts live in GitHub Releases, never git (ADR 0008 C6)
+*.mlpackage/
+*.mlmodelc/
+*.pt
+*.pth
+*.onnx
+
+# Clips stay local; only derived data is committed (ADR 0007)
+clips/
+*.mp4
+*.mov
+
+.DS_Store

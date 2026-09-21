@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "keypoint-series.schema.json",
+  "title": "Keypoint series sidecar",
+  "description": "Describes a pair of .npy files: keypoints float32 [T, K, 3] as (x, y, confidence) in pixels, and timestamps float64 [T] in seconds. Written by the app and every runner; read by the harness (ADR 0006 C5, ADR 0008 8c).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format_version", "keypoints_file", "timestamps_file", "keypoint_indices", "image_size", "model_id", "source"],
+  "properties": {
+    "format_version": { "const": 1 },
+    "keypoints_file": { "type": "string", "pattern": "\\.npy$" },
+    "timestamps_file": { "type": "string", "pattern": "\\.npy$" },
+    "keypoint_indices": {
+      "description": "COCO-WholeBody index of each K column, in order.",
+      "type": "array", "items": { "type": "integer", "minimum": 0, "maximum": 132 }, "minItems": 1, "uniqueItems": true
+    },
+    "image_size": {
+      "type": "array", "items": { "type": "integer", "minimum": 1 }, "minItems": 2, "maxItems": 2,
+      "description": "[width, height] of the frames the coordinates refer to."
+    },
+    "model_id": {
+      "description": "Readable name plus 8-hex content hash of the artifact (ADR 0006 C3).",
+      "type": "string", "pattern": "^[a-z0-9.-]+-[0-9a-f]{8}$"
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "name"],
+      "properties": {
+        "kind": { "enum": ["device", "runner"] },
+        "name": { "type": "string", "minLength": 1, "description": "Device model, or runner name." }
+      }
+    }
+  }
+}
