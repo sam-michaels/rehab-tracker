@@ -1,0 +1,20 @@
+{
+  "$schema": "https://nitro.margelo.com/nitro.schema.json",
+  "cxxNamespace": ["pose"],
+  "ios": {
+    "iosModuleName": "Pose"
+  },
+  "android": {
+    "androidNamespace": ["pose"],
+    "androidCxxLibName": "Pose"
+  },
+  "autolinking": {
+    "Pose": {
+      "ios": {
+        "language": "swift",
+        "implementationClassName": "HybridPose"
+      }
+    }
+  },
+  "ignorePaths": ["**/node_modules"]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "pose",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vision-camera frame processor plugin: RTMDet-nano + RTMPose-WholeBody Core ML inference",
+  "main": "src/index.ts",
+  "types": "src/index.ts"
+}

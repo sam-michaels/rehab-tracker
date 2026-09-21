@@ -13,6 +13,7 @@ __pycache__/
 # Model artifacts live in GitHub Releases, never git (ADR 0008 C6)
 *.mlpackage/
 *.mlmodelc/
+app/modules/pose/ios/models/
 *.pt
 *.pth
 *.onnx
@@ -23,3 +24,6 @@ clips/
 *.mov
 
 .DS_Store
+
+# Agent worktrees
+.claude/worktrees/
