@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "clip-manifest.schema.json",
+  "title": "Clip manifest entry",
+  "description": "No clip without a manifest entry (ADR 0007 C8). Camera placement is the variable T4 characterizes, so it is mandatory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["clip", "exercise", "subject", "camera", "footwear", "lighting", "background", "device", "recorded_at"],
+  "properties": {
+    "clip": { "type": "string", "minLength": 1, "description": "Local filename; clips are never committed." },
+    "exercise": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "subject": { "type": "string", "minLength": 1, "description": "Pseudonymous id." },
+    "camera": {
+      "type": "object", "additionalProperties": false,
+      "required": ["position", "height_cm", "distance_cm"],
+      "properties": {
+        "position": { "type": "string", "minLength": 1, "description": "e.g. sagittal-left, 30deg-anterior." },
+        "height_cm": { "type": "number", "exclusiveMinimum": 0 },
+        "distance_cm": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "footwear": { "type": "string", "minLength": 1 },
+    "lighting": { "type": "string", "minLength": 1 },
+    "background": { "type": "string", "minLength": 1 },
+    "device": { "type": "string", "minLength": 1 },
+    "recorded_at": { "type": "string", "format": "date" },
+    "notes": { "type": "string" }
+  }
+}

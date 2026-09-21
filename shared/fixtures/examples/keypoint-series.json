@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "keypoints_file": "example.npy",
+  "timestamps_file": "example.t.npy",
+  "keypoint_indices": [13, 15, 17, 18, 19],
+  "image_size": [1080, 1920],
+  "model_id": "rtmpose-s-wholebody-256x192-fp16-0badc0de",
+  "source": { "kind": "device", "name": "iPhone" }
+}

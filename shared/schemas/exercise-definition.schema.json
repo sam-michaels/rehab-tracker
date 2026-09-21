@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "exercise-definition.schema.json",
+  "title": "Exercise definition",
+  "description": "Everything exercise-specific is data here, never code (ADR 0002 follow-up). Keypoint indices are COCO-WholeBody.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "version", "name", "keypoints", "measured_angle", "counting_signal", "filter", "rep_thresholds", "out_of_plane", "rules"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "keypoints": {
+      "description": "Subset retained in session storage (ADR 0005, Tier 3). Every index used below must appear here.",
+      "type": "array", "items": { "$ref": "#/$defs/keypoint" }, "minItems": 2, "uniqueItems": true
+    },
+    "measured_angle": {
+      "description": "Angle in degrees between two segments, each [from, to]. The measured quantity (ADR 0003 C4).",
+      "type": "object", "additionalProperties": false,
+      "required": ["segment_a", "segment_b"],
+      "properties": {
+        "segment_a": { "$ref": "#/$defs/segment" },
+        "segment_b": { "$ref": "#/$defs/segment" }
+      }
+    },
+    "counting_signal": {
+      "description": "Scalar the rep state machine runs on; separate from the measured angle (ADR 0003 C4).",
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "keypoint"],
+      "properties": {
+        "kind": { "enum": ["keypoint_y"] },
+        "keypoint": { "$ref": "#/$defs/keypoint" }
+      }
+    },
+    "filter": {
+      "description": "Measurement-path parameters (ADR 0003). Tuned against the harness, never constants in code.",
+      "type": "object", "additionalProperties": false,
+      "required": ["median_window", "one_euro", "min_confidence", "max_gap_s"],
+      "properties": {
+        "median_window": { "type": "integer", "minimum": 1, "not": { "multipleOf": 2 } },
+        "one_euro": {
+          "type": "object", "additionalProperties": false,
+          "required": ["min_cutoff", "beta", "d_cutoff"],
+          "properties": {
+            "min_cutoff": { "type": "number", "exclusiveMinimum": 0 },
+            "beta": { "type": "number", "minimum": 0 },
+            "d_cutoff": { "type": "number", "exclusiveMinimum": 0 }
+          }
+        },
+        "min_confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "max_gap_s": { "type": "number", "exclusiveMinimum": 0, "description": "Longer gaps escalate to refuse-to-measure (ADR 0003 C2)." }
+      }
+    },
+    "rep_thresholds": {
+      "description": "Fractions of the session's calibrated range, not degrees (ADR 0003 C3). enter must exceed exit.",
+      "type": "object", "additionalProperties": false,
+      "required": ["enter", "exit"],
+      "properties": {
+        "enter": { "type": "number", "minimum": 0, "maximum": 1 },
+        "exit": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "out_of_plane": {
+      "description": "Foot:shank pixel-length ratio check against the calibrated neutral frame (ADR 0002 C5).",
+      "type": "object", "additionalProperties": false,
+      "required": ["foot", "shank", "tolerance"],
+      "properties": {
+        "foot": { "$ref": "#/$defs/segment" },
+        "shank": { "$ref": "#/$defs/segment" },
+        "tolerance": { "type": "number", "exclusiveMinimum": 0, "description": "Max relative deviation from calibrated ratio." }
+      }
+    },
+    "rules": {
+      "description": "Form rules (ADR 0004). No citation, no rule: citation is required and non-empty.",
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "signal", "comparator", "threshold", "citation", "message"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "signal": { "type": "string", "minLength": 1 },
+          "comparator": { "enum": ["<", "<=", ">", ">="] },
+          "threshold": { "type": "number" },
+          "citation": { "type": "string", "minLength": 10 },
+          "message": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "keypoint": { "type": "integer", "minimum": 0, "maximum": 132 },
+    "segment": {
+      "type": "array", "items": { "$ref": "#/$defs/keypoint" }, "minItems": 2, "maxItems": 2
+    }
+  }
+}

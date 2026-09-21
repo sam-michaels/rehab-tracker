@@ -1,0 +1,27 @@
+# Ubuntu on every push (ADR 0008 C4). macOS artifact job arrives with the first Core ML artifact.
+# No iOS build job (ADR 0008 C5).
+name: ci
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - run: npm ci
+        working-directory: app
+      - run: npm run typecheck
+        working-directory: app
+      - run: npm test
+        working-directory: app
+
+      - uses: astral-sh/setup-uv@v6
+      # Includes the .npy round-trip test, which runs the TS writer from app/ (ADR 0008 C3).
+      - run: uv run --locked pytest
+        working-directory: ml
