@@ -12,6 +12,7 @@ dependencies = [
 dev = [
     "pytest",
     "jsonschema[format]",
+    "matplotlib>=3.11.2",
 ]
 
 [tool.uv]
@@ -19,3 +20,4 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

@@ -3,7 +3,7 @@
   "version": 1,
   "name": "Calf raise (left, sagittal view)",
   "keypoints": [13, 15, 17, 18, 19],
-  "measured_angle": { "segment_a": [13, 15], "segment_b": [19, 17] },
+  "measured_angle": { "segment_a": [15, 13], "segment_b": [19, 17] },
   "counting_signal": { "kind": "keypoint_y", "keypoint": 19 },
   "filter": {
     "median_window": 5,
