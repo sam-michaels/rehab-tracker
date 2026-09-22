@@ -41,4 +41,9 @@ jobs:
       - run: ml/convert/fetch.sh "$MODEL_RELEASE"
         env:
           GH_TOKEN: ${{ github.token }}
+      # Pose is skipped here: it only matches PyTorch on the GPU and these runners have none
+      # (it collapses to 265 px on CPU). Run `uv run ml/convert/parity.py <dir>` on an Apple
+      # silicon Mac to check pose before shipping models.
       - run: uv run ml/convert/parity.py app/modules/pose/ios/models
+        env:
+          PARITY_SKIP: pose

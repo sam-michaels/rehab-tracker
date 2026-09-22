@@ -1,4 +1,4 @@
-import { nextRoi, roiFromKeypoints, shouldRedetect, type PoseResult } from './tracker';
+import { nextRoi, personPresent, roiFromKeypoints, shouldRedetect, type PoseResult } from './tracker';
 
 // 4 confident keypoints forming a 0.2x0.2 box centered at (0.5, 0.5); one low-confidence
 // keypoint far outside it that must be excluded from the bbox.
@@ -100,4 +100,25 @@ describe('nextRoi', () => {
   test('mode B re-detects on confidence collapse', () => {
     expect(nextRoi('B', collapsed, 1)).toBeNull();
   });
+});
+
+describe('personPresent', () => {
+  test('thresholds the mean of body+foot scores 0-22, ignoring face/hands', () => {
+    const scores = new Array(133).fill(0.9);
+    expect(personPresent(scores)).toBe(true);
+    scores.fill(0.1, 0, 23);
+    expect(personPresent(scores)).toBe(false); // high face/hand scores don't count
+  });
+});
+
+test('roiFromKeypoints ignores face/hand keypoints (index > 22)', () => {
+  const scores = new Array(133).fill(0);
+  const keypoints = new Array(266).fill(0.5);
+  scores.fill(0.9, 0, 4); // 4 confident body points forming a 0.2x0.2 box
+  keypoints.splice(0, 8, 0.4, 0.4, 0.6, 0.4, 0.4, 0.6, 0.6, 0.6);
+  const bodyOnly = roiFromKeypoints(keypoints, scores, 0.3, 1);
+  scores[100] = 0.9; // a confident hand point far away must not move the ROI
+  keypoints[200] = 0.99;
+  keypoints[201] = 0.99;
+  expect(roiFromKeypoints(keypoints, scores, 0.3, 1)).toEqual(bodyOnly);
 });
