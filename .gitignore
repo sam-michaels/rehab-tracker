@@ -14,6 +14,7 @@ __pycache__/
 *.mlpackage/
 *.mlmodelc/
 app/modules/pose/ios/models/
+ml/convert/out/
 *.pt
 *.pth
 *.onnx

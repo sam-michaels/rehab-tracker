@@ -1,4 +1,4 @@
-# Ubuntu on every push (ADR 0008 C4). macOS artifact job arrives with the first Core ML artifact.
+# Ubuntu on every push (ADR 0008 C4); macOS artifact job on PRs to main and v* tags.
 # No iOS build job (ADR 0008 C5).
 name: ci
 on: [push, pull_request]
@@ -25,3 +25,20 @@ jobs:
       # Includes the .npy round-trip test, which runs the TS writer from app/ (ADR 0008 C3).
       - run: uv run --locked pytest
         working-directory: ml
+
+  # Fetches the converted artifacts from a release and runs the parity gate (ADR 0006 C4)
+  # on the actual Core ML models -- prediction needs macOS (ADR 0006 amendment). Requires
+  # MODEL_RELEASE to name a release that already has the artifacts uploaded; conversion
+  # itself (ml/convert/convert.py) runs by hand in the container, not in CI.
+  parity:
+    if: (github.event_name == 'pull_request' && github.base_ref == 'main') || startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-latest
+    env:
+      MODEL_RELEASE: v0-spike
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: ml/convert/fetch.sh "$MODEL_RELEASE"
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - run: uv run ml/convert/parity.py app/modules/pose/ios/models
