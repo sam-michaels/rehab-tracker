@@ -13,6 +13,7 @@ Core ML use. Default units on a Mac pick the GPU, which hid that the Neural Engi
 collapses the pose head's FP32-pinned ops -- so each model is checked per unit explicitly.
 """
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -27,6 +28,12 @@ SCORE_THRESHOLD = 0.3
 # runs with .all, which on iPhone may land on the Neural Engine or the GPU, so check both.
 # ponytail: GitHub's macOS runners are VMs with no Neural Engine -- CPU_AND_NE falls back to
 # CPU there, so the NE check only has teeth when run on Apple silicon hardware.
+# The pose model only matches PyTorch on the GPU: on CPU and Neural Engine its SimCC peaks
+# collapse (argmax pins every keypoint to 191.5, 0 -- 265 px off). The app pins .cpuAndGPU
+# for that reason. GitHub's macOS runners have no usable GPU, so CI sets PARITY_SKIP=pose and
+# this gate only has teeth for pose when run on Apple silicon hardware.
+SKIP = {m for m in os.environ.get("PARITY_SKIP", "").split(",") if m}
+
 COMPUTE_UNITS = {
     "detector": [ct.ComputeUnit.CPU_AND_NE, ct.ComputeUnit.CPU_AND_GPU],
     "pose": [ct.ComputeUnit.CPU_AND_GPU],
@@ -106,6 +113,9 @@ def main():
 
     ok = True
     for name, check in (("detector", check_detector), ("pose", check_pose)):
+        if name in SKIP:
+            print(f"{name}: SKIPPED (PARITY_SKIP) -- run this gate on Apple silicon to check it")
+            continue
         for units in COMPUTE_UNITS[name]:
             print(f"{name} ({units.name}):")
             ok &= check(out_dir, manifest[name], units)

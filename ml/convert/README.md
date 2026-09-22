@@ -24,7 +24,14 @@ uv run ml/convert/parity.py ml/convert/out
 
 Runs on the macOS host. Compares Core ML predictions against the PyTorch reference on
 the fixed frame set; fails if the detector box or any pose keypoint (scored > 0.3 in the
-reference) drifts more than 2px.
+reference) drifts more than 2px. Each model is checked on the compute units the app allows
+it (see `COMPUTE_UNITS`, mirrors `HybridPose.swift`).
+
+**The pose model is GPU-only.** On CPU or Neural Engine its SimCC peaks collapse and every
+keypoint lands at (191.5, 0), 265 px off -- so the app pins `.cpuAndGPU`. CI runs with
+`PARITY_SKIP=pose` because GitHub's macOS runners have no usable GPU; run this gate on an
+Apple silicon Mac whenever the models change. Fixing the model itself (whole pose head at
+FP32, re-converted) is the real fix and is not done yet.
 
 ## Fetch (on a release)
 
