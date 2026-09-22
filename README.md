@@ -17,6 +17,14 @@ docs/adr/   architecture decisions
 
 Why it's built this way: [docs/adr/](docs/adr/).
 
+## Reports
+
+Measurement findings live in [ml/reports/](ml/reports/):
+
+- [Inference spike (2026-09-22)](ml/reports/2026-09-22-inference-spike.md) — RTMDet-nano +
+  RTMPose-s-WholeBody on iPhone: 30 fps at ~14 ms/frame with the detector amortized, and why
+  the pose model is GPU-only for now.
+
 ## Public by design
 
 This repository is public partly so that macOS CI runners are free (ADR 0008, Condition 4).
