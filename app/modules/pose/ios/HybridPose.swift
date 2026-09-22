@@ -22,9 +22,9 @@ private struct NormRect {
 private final class LoadedModel {
   let request: VNCoreMLRequest
   let inputSize: CGSize
-  init(vnModel: VNCoreMLModel, inputSize: CGSize) {
+  init(vnModel: VNCoreMLModel, inputSize: CGSize, cropAndScale: VNImageCropAndScaleOption) {
     request = VNCoreMLRequest(model: vnModel)
-    request.imageCropAndScaleOption = .scaleFill
+    request.imageCropAndScaleOption = cropAndScale
     self.inputSize = inputSize
   }
 }
@@ -68,6 +68,10 @@ public class HybridPose: HybridPoseSpec {
     var detMs: Double?
     let poseROI: NormRect
 
+    // Upright width/height in pixels (Vision applies the orientation), same as App.tsx.
+    let sideways = frame.orientation == .left || frame.orientation == .right
+    let aspect = sideways ? frame.height / frame.width : frame.width / frame.height
+
     if let roi = roi {
       guard roi.count == 4 else {
         throw RuntimeError.error(withMessage: "pose: roi must be [x,y,w,h], got \(roi.count) values")
@@ -76,11 +80,12 @@ public class HybridPose: HybridPoseSpec {
       poseROI = HybridPose.clampToFrame(NormRect(x: roi[0], y: roi[1], w: roi[2], h: roi[3]))
     } else {
       let start = CACurrentMediaTime()
-      let (box, score) = try HybridPose.runDetector(pixelBuffer: pixelBuffer, orientation: orientation)
+      let (box, score) = try HybridPose.runDetector(
+        pixelBuffer: pixelBuffer, orientation: orientation, frameAspect: aspect)
       detMs = (CACurrentMediaTime() - start) * 1000
       detBox = box
       detScore = score
-      poseROI = HybridPose.expandToPoseROI(box)
+      poseROI = HybridPose.expandToPoseROI(box, frameAspect: aspect)
     }
 
     let poseStart = CACurrentMediaTime()
@@ -114,7 +119,10 @@ public class HybridPose: HybridPoseSpec {
     return frameworkBundle
   }
 
-  private static func loadModel(name: String, inputSize: CGSize) throws -> LoadedModel {
+  private static func loadModel(
+    name: String, inputSize: CGSize, cropAndScale: VNImageCropAndScaleOption,
+    computeUnits: MLComputeUnits
+  ) throws -> LoadedModel {
     guard let url = resourceBundle().url(forResource: name, withExtension: "mlmodelc") else {
       throw RuntimeError.error(
         withMessage:
@@ -123,17 +131,19 @@ public class HybridPose: HybridPoseSpec {
           + "(Xcode compiles .mlpackage -> .mlmodelc at build time).")
     }
     let config = MLModelConfiguration()
-    config.computeUnits = .all
+    config.computeUnits = computeUnits
     let mlModel = try MLModel(contentsOf: url, configuration: config)
     let vnModel = try VNCoreMLModel(for: mlModel)
-    return LoadedModel(vnModel: vnModel, inputSize: inputSize)
+    return LoadedModel(vnModel: vnModel, inputSize: inputSize, cropAndScale: cropAndScale)
   }
 
   private static func getDetector() throws -> LoadedModel {
     lock.lock()
     defer { lock.unlock() }
     if let m = detectorModel { return m }
-    let m = try loadModel(name: detectorName, inputSize: detectorInputSize)
+    // Letterbox: RTMDet was trained aspect-preserved; squashing a 9:16 frame into 320x320
+    // narrows people ~1.8x and lets furniture outscore them.
+    let m = try loadModel(name: detectorName, inputSize: detectorInputSize, cropAndScale: .scaleFit, computeUnits: .all)
     detectorModel = m
     return m
   }
@@ -142,16 +152,20 @@ public class HybridPose: HybridPoseSpec {
     lock.lock()
     defer { lock.unlock() }
     if let m = poseModel { return m }
-    let m = try loadModel(name: poseName, inputSize: poseInputSize)
+    // The pose ROI is already fitted to the model's 3:4 in pixels, so fill is exact.
+    // No Neural Engine: it computes FP16 only, which ignores the head ops convert.py pins to
+    // FP32 and overflows them -- body keypoints collapse to argmax (191.5, 0) on device.
+    let m = try loadModel(
+      name: poseName, inputSize: poseInputSize, cropAndScale: .scaleFill, computeUnits: .cpuAndGPU)
     poseModel = m
     return m
   }
 
   // MARK: - Inference
 
-  private static func runDetector(pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation)
-    throws -> (NormRect, Double)
-  {
+  private static func runDetector(
+    pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation, frameAspect: Double
+  ) throws -> (NormRect, Double) {
     let model = try getDetector()
     let request = model.request
     let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
@@ -162,16 +176,16 @@ public class HybridPose: HybridPoseSpec {
     else {
       throw RuntimeError.error(withMessage: "pose: detector output missing 'box'/'score'")
     }
-    // box is xyxy in the detector's 320x320 input px (top-left origin raster space).
-    let x0 = box[0].doubleValue, y0 = box[1].doubleValue
-    let x1 = box[2].doubleValue, y1 = box[3].doubleValue
-    let full = NormRect(x: 0, y: 0, w: 1, h: 1)
-    let topLeft = mapModelPointToFrame(x: x0, y: y0, inputSize: model.inputSize, roi: full)
-    let bottomRight = mapModelPointToFrame(x: x1, y: y1, inputSize: model.inputSize, roi: full)
-    let rect = NormRect(
-      x: topLeft.0, y: topLeft.1,
-      w: bottomRight.0 - topLeft.0, h: bottomRight.1 - topLeft.1)
-    return (rect, score[0].doubleValue)
+    // box is xyxy in the detector's 320x320 input px (top-left origin raster space). Under
+    // .scaleFit the frame occupies a centered (cw x ch) fraction of the input; undo the padding.
+    let cw = min(1, frameAspect), ch = min(1, 1 / frameAspect)
+    func unpad(_ v: Double, _ size: CGFloat, _ c: Double) -> Double {
+      min(1, max(0, (v / Double(size) - (1 - c) / 2) / c))
+    }
+    let size = model.inputSize
+    let x0 = unpad(box[0].doubleValue, size.width, cw), y0 = unpad(box[1].doubleValue, size.height, ch)
+    let x1 = unpad(box[2].doubleValue, size.width, cw), y1 = unpad(box[3].doubleValue, size.height, ch)
+    return (NormRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0), score[0].doubleValue)
   }
 
   private static func runPose(
@@ -233,11 +247,13 @@ public class HybridPose: HybridPoseSpec {
   }
 
   /// Expands a detector box to the pose model's 3:4 (w:h) aspect with 1.25x
-  /// padding around its center, clamped to stay inside the frame.
-  private static func expandToPoseROI(_ box: NormRect) -> NormRect {
-    let cx = box.x + box.w / 2
+  /// padding around its center, clamped to stay inside the frame. The aspect is fitted in
+  /// pixels (H = 1, W = frameAspect), not normalized units: the frame isn't square, and a
+  /// normalized 3:4 crop reaches the model stretched. Mirrors roiFromKeypoints in tracker.ts.
+  private static func expandToPoseROI(_ box: NormRect, frameAspect: Double) -> NormRect {
+    let cx = (box.x + box.w / 2) * frameAspect
     let cy = box.y + box.h / 2
-    var w = box.w * 1.25
+    var w = box.w * frameAspect * 1.25
     var h = box.h * 1.25
     let targetAspect = 3.0 / 4.0  // w:h
     if w / h < targetAspect {
@@ -245,7 +261,8 @@ public class HybridPose: HybridPoseSpec {
     } else {
       h = w / targetAspect
     }
-    return clampToFrame(NormRect(x: cx - w / 2, y: cy - h / 2, w: w, h: h))
+    return clampToFrame(
+      NormRect(x: (cx - w / 2) / frameAspect, y: cy - h / 2, w: w / frameAspect, h: h))
   }
 
   private static func cgOrientation(for o: CameraOrientation) -> CGImagePropertyOrientation {

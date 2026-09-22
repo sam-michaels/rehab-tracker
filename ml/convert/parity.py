@@ -8,7 +8,9 @@ Runs on the macOS host -- Core ML prediction doesn't work in the Linux conversio
     uv run ml/convert/parity.py <outdir>
 
 Exits non-zero if detector box or pose keypoints (scored keypoints only, ref score > 0.3)
-drift more than TOLERANCE_PX from the PyTorch reference.
+drift more than TOLERANCE_PX from the PyTorch reference, on any compute units the app lets
+Core ML use. Default units on a Mac pick the GPU, which hid that the Neural Engine (FP16-only)
+collapses the pose head's FP32-pinned ops -- so each model is checked per unit explicitly.
 """
 import json
 import sys
@@ -20,6 +22,15 @@ from PIL import Image
 
 TOLERANCE_PX = 2.0
 SCORE_THRESHOLD = 0.3
+
+# Mirrors computeUnits in app/modules/pose/ios/HybridPose.swift; keep in sync. The detector
+# runs with .all, which on iPhone may land on the Neural Engine or the GPU, so check both.
+# ponytail: GitHub's macOS runners are VMs with no Neural Engine -- CPU_AND_NE falls back to
+# CPU there, so the NE check only has teeth when run on Apple silicon hardware.
+COMPUTE_UNITS = {
+    "detector": [ct.ComputeUnit.CPU_AND_NE, ct.ComputeUnit.CPU_AND_GPU],
+    "pose": [ct.ComputeUnit.CPU_AND_GPU],
+}
 
 
 def predict(model, image_hwc_uint8):
@@ -36,9 +47,13 @@ def reference_dir(out_dir):
     return local if local.is_dir() else Path(__file__).parent / "reference"
 
 
-def check_detector(out_dir, manifest):
+def load(out_dir, manifest, units):
     pkg = out_dir / f"{manifest['id'].rsplit('-', 1)[0]}.mlpackage"
-    model = ct.models.MLModel(str(pkg))
+    return ct.models.MLModel(str(pkg), compute_units=units)
+
+
+def check_detector(out_dir, manifest, units):
+    model = load(out_dir, manifest, units)
     ref = reference_dir(out_dir)
     worst = 0.0
     for i in range(manifest["reference_frames"]):
@@ -54,9 +69,8 @@ def check_detector(out_dir, manifest):
     return worst <= TOLERANCE_PX
 
 
-def check_pose(out_dir, manifest):
-    pkg = out_dir / f"{manifest['id'].rsplit('-', 1)[0]}.mlpackage"
-    model = ct.models.MLModel(str(pkg))
+def check_pose(out_dir, manifest, units):
+    model = load(out_dir, manifest, units)
     ref = reference_dir(out_dir)
     worst, checked = 0.0, 0
     for i in range(manifest["reference_frames"]):
@@ -90,12 +104,13 @@ def main():
     out_dir = Path(sys.argv[1] if len(sys.argv) > 1 else "ml/convert/out")
     manifest = json.loads((out_dir / "manifest.json").read_text())
 
-    print("detector:")
-    det_ok = check_detector(out_dir, manifest["detector"])
-    print("pose:")
-    pose_ok = check_pose(out_dir, manifest["pose"])
+    ok = True
+    for name, check in (("detector", check_detector), ("pose", check_pose)):
+        for units in COMPUTE_UNITS[name]:
+            print(f"{name} ({units.name}):")
+            ok &= check(out_dir, manifest[name], units)
 
-    if det_ok and pose_ok:
+    if ok:
         print("PASS")
         return
     print("FAIL", file=sys.stderr)

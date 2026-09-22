@@ -26,7 +26,7 @@ const ROI_PADDING = 1.25;
 const DEFAULT_MIN_CONFIDENCE = 0.3;
 
 /**
- * Bbox over keypoints with score >= minConfidence, padded 1.25x and expanded to the pose
+ * Bbox over body+foot keypoints (0-22) with score >= minConfidence, padded 1.25x and expanded to the pose
  * model's 3:4 (w:h) input aspect around its center. Aspect is computed in pixels via
  * frameAspect (buffer width/height) since the frame is not square. Null if fewer than
  * minKeypoints are confident.
@@ -43,7 +43,9 @@ export function roiFromKeypoints(
   // parameter defaults, so they'd be undefined on the frame-processor thread.
   minConfidence ??= DEFAULT_MIN_CONFIDENCE;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
-  for (let i = 0; i < scores.length; i++) {
+  // Body+feet only: a stray confident face/hand keypoint at distance would blow the ROI up.
+  const n_ = Math.min(scores.length, BODY_END + 1);
+  for (let i = 0; i < n_; i++) {
     if (scores[i] < minConfidence) continue;
     const x = keypoints[2 * i];
     const y = keypoints[2 * i + 1];
@@ -66,13 +68,19 @@ export function roiFromKeypoints(
   return [(cx - w / 2) / frameAspect, cy - h / 2, w / frameAspect, h];
 }
 
-/** True if a person is plausibly in view: mean body+foot (0-22) score >= threshold. */
+/** Mean score of the body+foot keypoints (0-22). */
+export function meanBodyScore(scores: number[]): number {
+  'worklet';
+  let sum = 0;
+  for (let i = 0; i <= BODY_END; i++) sum += scores[i];
+  return sum / (BODY_END + 1);
+}
+
+/** True if a person is plausibly in view: meanBodyScore >= threshold. */
 export function personPresent(scores: number[], threshold?: number): boolean {
   'worklet';
   threshold ??= DEFAULT_MIN_CONFIDENCE;
-  let sum = 0;
-  for (let i = 0; i <= BODY_END; i++) sum += scores[i];
-  return sum / (BODY_END + 1) >= threshold;
+  return meanBodyScore(scores) >= threshold;
 }
 
 /**
