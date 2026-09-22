@@ -190,3 +190,28 @@ with a stall.
   ran the graph.
 - The common keypoint-series format is shared between runners, the harness, and ADR 0005's
   session export. It should be defined once.
+
+## Amendment (2026-09-21): conversion and the parity gate run on different hosts
+
+Condition 3 put conversion in a pinned container; Condition 4 requires the parity gate to
+execute the exported artifact. Those two requirements are in tension, because Core ML
+prediction only runs on macOS, and the container from Condition 3 is Linux (mmpose/mmcv have
+no reliable macOS build path, which is exactly why they're contained in the first place).
+
+The resolution is a split, not a single script: `ml/convert/convert.py` runs in the container
+and does the PyTorch-side work — trace, `ct.convert()`, and running the *PyTorch* model
+(not the Core ML one) over a fixed reference frame set, saving both as `.npy`.
+`ml/convert/parity.py` runs separately on the macOS host, loads the `.mlpackage` outputs and
+the saved PyTorch references, and does the actual PyTorch-vs-Core-ML comparison Condition 4
+requires. CI mirrors the split: the existing Ubuntu job is unchanged, and a new macOS job
+fetches released artifacts and runs `parity.py` there.
+
+One conversion-correctness finding worth recording: at plain FP16, the pose head's
+GAU/linear layers produced per-keypoint SimCC peaks up to ~100px off from the PyTorch
+reference on some frames, traced to fp16-range overflow in constant-folded weights during
+conversion (confirmed by converting the same graph at FP32, which matched exactly). The
+fix is `ct.transform.FP16ComputePrecision` with an `op_selector` that keeps `linear` /
+`matmul` ops at FP32 while the rest of the graph (the CSPNeXt backbone, where the compute
+actually is) stays FP16 — not a retreat from Condition 2's FP16 starting point, since the
+Neural Engine cost is concentrated in the backbone convolutions, not this handful of head
+ops.
