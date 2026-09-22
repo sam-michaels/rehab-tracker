@@ -59,7 +59,8 @@ public class HybridPose: HybridPoseSpec {
       guard roi.count == 4 else {
         throw RuntimeError.error(withMessage: "pose: roi must be [x,y,w,h], got \(roi.count) values")
       }
-      poseROI = NormRect(x: roi[0], y: roi[1], w: roi[2], h: roi[3])
+      // Tracker ROIs may extend past the frame edge; Vision rejects those.
+      poseROI = HybridPose.clampToFrame(NormRect(x: roi[0], y: roi[1], w: roi[2], h: roi[3]))
     } else {
       let start = CACurrentMediaTime()
       let (box, score) = try HybridPose.runDetector(pixelBuffer: pixelBuffer, orientation: orientation)
@@ -197,7 +198,17 @@ public class HybridPose: HybridPoseSpec {
   /// Vision's `regionOfInterest` is normalized [0,1] with BOTTOM-LEFT origin.
   /// Our `roi` (and every other coordinate in this plugin) is top-left origin.
   private static func visionROI(from r: NormRect) -> CGRect {
+    // Keep off the exact frame edge: Vision re-derives the rect for the buffer orientation and
+    // an edge-touching ROI can land at -1e-17, which it rejects. 1e-6 of the frame is invisible.
     CGRect(x: r.x, y: 1 - r.y - r.h, width: r.w, height: r.h)
+      .intersection(CGRect(x: 0, y: 0, width: 1, height: 1).insetBy(dx: 1e-6, dy: 1e-6))
+  }
+
+  /// Shifts `r` inside the frame, keeping its size (and so its aspect) where it fits.
+  private static func clampToFrame(_ r: NormRect) -> NormRect {
+    let w = min(r.w, 1.0)
+    let h = min(r.h, 1.0)
+    return NormRect(x: max(0, min(r.x, 1 - w)), y: max(0, min(r.y, 1 - h)), w: w, h: h)
   }
 
   /// Maps a point in a model's raster input px (top-left origin, within
@@ -224,13 +235,7 @@ public class HybridPose: HybridPoseSpec {
     } else {
       h = w / targetAspect
     }
-    w = min(w, 1.0)
-    h = min(h, 1.0)
-    var x = cx - w / 2
-    var y = cy - h / 2
-    x = max(0, min(x, 1 - w))
-    y = max(0, min(y, 1 - h))
-    return NormRect(x: x, y: y, w: w, h: h)
+    return clampToFrame(NormRect(x: cx - w / 2, y: cy - h / 2, w: w, h: h))
   }
 
   private static func cgOrientation(for o: CameraOrientation) -> CGImagePropertyOrientation {

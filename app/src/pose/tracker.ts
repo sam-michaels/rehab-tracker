@@ -34,11 +34,14 @@ const DEFAULT_MIN_CONFIDENCE = 0.3;
 export function roiFromKeypoints(
   keypoints: number[],
   scores: number[],
-  minConfidence = DEFAULT_MIN_CONFIDENCE,
+  minConfidence?: number,
   frameAspect = 1,
   minKeypoints = 4,
 ): Roi | null {
   'worklet';
+  // Defaulted in the body: the worklets plugin doesn't capture module constants used only in
+  // parameter defaults, so they'd be undefined on the frame-processor thread.
+  minConfidence ??= DEFAULT_MIN_CONFIDENCE;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, n = 0;
   for (let i = 0; i < scores.length; i++) {
     if (scores[i] < minConfidence) continue;
@@ -72,11 +75,13 @@ export function shouldRedetect(
   keypoints: number[],
   scores: number[],
   frameAspect = 1,
-  minConfidence = DEFAULT_MIN_CONFIDENCE,
-  meanScoreThreshold = DEFAULT_MIN_CONFIDENCE,
+  minConfidence?: number,
+  meanScoreThreshold?: number,
   minInFrameFraction = 0.5,
 ): boolean {
   'worklet';
+  minConfidence ??= DEFAULT_MIN_CONFIDENCE;
+  meanScoreThreshold ??= DEFAULT_MIN_CONFIDENCE;
   let sum = 0;
   for (let i = 0; i <= BODY_END; i++) sum += scores[i];
   if (sum / (BODY_END + 1) < meanScoreThreshold) return true;
@@ -97,7 +102,7 @@ export function nextRoi(
   mode: Mode,
   result: PoseResult,
   frameAspect = 1,
-  minConfidence = DEFAULT_MIN_CONFIDENCE,
+  minConfidence?: number,
 ): Roi | null {
   'worklet';
   if (mode === 'A') return null;
