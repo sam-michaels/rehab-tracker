@@ -66,6 +66,15 @@ export function roiFromKeypoints(
   return [(cx - w / 2) / frameAspect, cy - h / 2, w / frameAspect, h];
 }
 
+/** True if a person is plausibly in view: mean body+foot (0-22) score >= threshold. */
+export function personPresent(scores: number[], threshold?: number): boolean {
+  'worklet';
+  threshold ??= DEFAULT_MIN_CONFIDENCE;
+  let sum = 0;
+  for (let i = 0; i <= BODY_END; i++) sum += scores[i];
+  return sum / (BODY_END + 1) >= threshold;
+}
+
 /**
  * True on confidence collapse (mean score of body+foot keypoints 0-22 below
  * meanScoreThreshold) or when the ROI derived from these keypoints would leave the frame
@@ -81,10 +90,7 @@ export function shouldRedetect(
 ): boolean {
   'worklet';
   minConfidence ??= DEFAULT_MIN_CONFIDENCE;
-  meanScoreThreshold ??= DEFAULT_MIN_CONFIDENCE;
-  let sum = 0;
-  for (let i = 0; i <= BODY_END; i++) sum += scores[i];
-  if (sum / (BODY_END + 1) < meanScoreThreshold) return true;
+  if (!personPresent(scores, meanScoreThreshold)) return true;
 
   const roi = roiFromKeypoints(keypoints, scores, minConfidence, frameAspect);
   if (roi === null) return true;

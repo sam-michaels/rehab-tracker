@@ -16,12 +16,15 @@ private struct NormRect {
   var h: Double
 }
 
-/// One loaded Core ML model plus the pixel size Vision must scale its input to.
+/// One loaded Core ML model, its reusable Vision request, and the pixel size Vision must scale
+/// its input to. Frames arrive one at a time on the camera thread, so mutating the shared
+/// request's `regionOfInterest` per frame is safe.
 private final class LoadedModel {
-  let vnModel: VNCoreMLModel
+  let request: VNCoreMLRequest
   let inputSize: CGSize
   init(vnModel: VNCoreMLModel, inputSize: CGSize) {
-    self.vnModel = vnModel
+    request = VNCoreMLRequest(model: vnModel)
+    request.imageCropAndScaleOption = .scaleFill
     self.inputSize = inputSize
   }
 }
@@ -40,6 +43,16 @@ public class HybridPose: HybridPoseSpec {
   private static let detectorInputSize = CGSize(width: 320, height: 320)
   private static let poseInputSize = CGSize(width: 192, height: 256)
   private static let numKeypoints = 133
+
+  /// Loads both models off the JS thread at creation (app launch), so the first camera frame
+  /// doesn't stall on Core ML load / Neural Engine prep. The getters' lock makes this race-safe.
+  override public init() {
+    super.init()
+    DispatchQueue.global(qos: .userInitiated).async {
+      _ = try? HybridPose.getDetector()
+      _ = try? HybridPose.getPoseModel()
+    }
+  }
 
   public func run(frame: any HybridFrameSpec, roi: [Double]?) throws -> PoseResult {
     guard let nativeFrame = frame as? NativeFrame,
@@ -140,8 +153,7 @@ public class HybridPose: HybridPoseSpec {
     throws -> (NormRect, Double)
   {
     let model = try getDetector()
-    let request = VNCoreMLRequest(model: model.vnModel)
-    request.imageCropAndScaleOption = .scaleFill
+    let request = model.request
     let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
     try handler.perform([request])
 
@@ -166,8 +178,7 @@ public class HybridPose: HybridPoseSpec {
     pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation, roi: NormRect
   ) throws -> ([Double], [Double]) {
     let model = try getPoseModel()
-    let request = VNCoreMLRequest(model: model.vnModel)
-    request.imageCropAndScaleOption = .scaleFill
+    let request = model.request
     request.regionOfInterest = visionROI(from: roi)
     let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
     try handler.perform([request])
@@ -178,18 +189,17 @@ public class HybridPose: HybridPoseSpec {
       throw RuntimeError.error(withMessage: "pose: pose model output missing 'keypoints'/'scores'")
     }
 
+    // One strided copy each into logical row-major order (handles ANE-padded strides and FP16),
+    // instead of an NSNumber-boxed subscript per element.
+    let kpFlat = MLShapedArray<Float>(converting: kp).scalars
     var keypoints = [Double](repeating: 0, count: numKeypoints * 2)
     for i in 0..<numKeypoints {
-      let px = kp[[i, 0] as [NSNumber]].doubleValue
-      let py = kp[[i, 1] as [NSNumber]].doubleValue
-      let mapped = mapModelPointToFrame(x: px, y: py, inputSize: model.inputSize, roi: roi)
+      let mapped = mapModelPointToFrame(
+        x: Double(kpFlat[2 * i]), y: Double(kpFlat[2 * i + 1]), inputSize: model.inputSize, roi: roi)
       keypoints[i * 2] = mapped.0
       keypoints[i * 2 + 1] = mapped.1
     }
-    var scores = [Double](repeating: 0, count: numKeypoints)
-    for i in 0..<numKeypoints {
-      scores[i] = sc[i].doubleValue
-    }
+    let scores = MLShapedArray<Float>(converting: sc).scalars.map(Double.init)
     return (keypoints, scores)
   }
 

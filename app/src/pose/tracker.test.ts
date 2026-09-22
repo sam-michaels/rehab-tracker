@@ -1,4 +1,4 @@
-import { nextRoi, roiFromKeypoints, shouldRedetect, type PoseResult } from './tracker';
+import { nextRoi, personPresent, roiFromKeypoints, shouldRedetect, type PoseResult } from './tracker';
 
 // 4 confident keypoints forming a 0.2x0.2 box centered at (0.5, 0.5); one low-confidence
 // keypoint far outside it that must be excluded from the bbox.
@@ -99,5 +99,14 @@ describe('nextRoi', () => {
 
   test('mode B re-detects on confidence collapse', () => {
     expect(nextRoi('B', collapsed, 1)).toBeNull();
+  });
+});
+
+describe('personPresent', () => {
+  test('thresholds the mean of body+foot scores 0-22, ignoring face/hands', () => {
+    const scores = new Array(133).fill(0.9);
+    expect(personPresent(scores)).toBe(true);
+    scores.fill(0.1, 0, 23);
+    expect(personPresent(scores)).toBe(false); // high face/hand scores don't count
   });
 });
