@@ -1,6 +1,6 @@
 # ADR 0002: Pose model — RTMPose-WholeBody on-device, MediaPipe as offline comparison
 
-- **Status:** Accepted (conditional — see Condition 1)
+- **Status:** Accepted (conditional — see Condition 1); amended 2026-09-25 for a public App Store release
 - **Date:** 2026-09-20
 - **Deciders:** Project owner
 - **Supersedes:** ADR 0001, Condition 1 (the inference spike is redefined below)
@@ -146,6 +146,11 @@ Where a permissive claim is wanted, prefer a COCO-WholeBody-only checkpoint. Thi
 blocking item for the README, not a cleanup task, because the model is shipped rather than
 merely used for research.
 
+**Resolved 2026-09-25** ([ml/MODEL_CARD.md](../../ml/MODEL_CARD.md)). Both shipped checkpoints
+are non-commercial research only: UBody is CC BY-NC-SA 4.0 and Objects365 is academic-only.
+The suggested COCO-WholeBody-only swap does not help, because COCO-WholeBody is itself
+non-commercial. The weights stay in the release, relabelled as CC BY-NC-SA 4.0.
+
 ### Condition 4 — MediaPipe becomes the offline comparison baseline
 
 With RTMPose shipping on-device, using RTMPose as the harness reference would compare a
@@ -249,3 +254,66 @@ code.
   its own ground-truth validation before any claim is made about it.
 - Camera setup guidance now carries a functional duty, not merely an advisory one: it
   produces the calibration values the refuse-to-measure logic depends on.
+
+## Amendment (2026-09-25): the App Store build ships MediaPipe; RTMPose stays research-only
+
+The owner intends to publish the app on the App Store, starting in Canada, for people to use
+in their own physio. Condition 3 established that the RTMPose and RTMDet weights are
+non-commercial research only ([ml/MODEL_CARD.md](../../ml/MODEL_CARD.md)). No
+RTMPose-WholeBody checkpoint is permissive, because COCO-WholeBody itself is not. A public
+app is not research, even if free, so those weights cannot ship in it.
+
+**Decision.** The public build uses Option A: **MediaPipe Pose Landmarker**. Its model card
+states Apache-2.0, and it was trained on Google's own consented images. It has heel and
+foot-index points per side, which is enough for every MVP measurement, including ankle
+joint angle. This is the fallback Condition 1 already named; it is taken for licensing
+rather than for deployment failure.
+
+**The models, not the SDK.** Google's MediaPipe Tasks privacy notice says the Tasks APIs
+"send metrics about the performance and utilization of the APIs in your app to Google". It
+documents no way to disable this, and it makes the app responsible for obtaining user consent.
+Input images stay on the device, but "nothing leaves the phone" would no longer be true.
+So the app does not use the SDK. It runs the two Apache-2.0 `.tflite` files from
+`pose_landmarker_full.task` (person detector + landmark model) with the TensorFlow Lite
+runtime. That runtime's binaries were checked and import no networking APIs. The pre- and
+post-processing MediaPipe's graph does around the models is reimplemented from MediaPipe's own
+calculators: `ml/runners/blazepose.py` is the reference, and
+`app/modules/pose/ios/BlazePoseGeometry.swift` is a port checked against shared fixtures. This
+is the integration cost Option A's description warned about (the logic lives in the runtime,
+not the model file), accepted to keep the privacy claim. The reference agrees with the SDK to
+a median of 1.9–5.6 px on the three COCO reference images; the gap comes from crop resampling
+details the model is very sensitive to (see the model card). Accuracy is judged against the
+goniometer (Condition 4), not against the SDK.
+
+**RTMPose keeps a role, off the device.** It moves into the Condition 4 harness as a
+non-commercial research comparison, which its licence permits. The roles in Condition 4
+therefore swap: MediaPipe is the shipped model, and RTMPose (on-device variant and a large
+RTMW) measures what the permissive choice costs in degrees.
+
+**What this gives up.** MediaPipe has 33 landmarks, not 133. Hands are coarse (wrist plus
+three finger points), so the "every joint is already covered" argument in the Decision above
+now holds for major joints only. Fine hand work would need a second model or a
+self-trained one.
+
+**Path to a self-trained model**, should MediaPipe's accuracy prove insufficient. Only
+permissively licensed data qualifies: COCO keypoints filtered to images whose own Flickr
+licence is CC BY or no-known-restrictions (about 9.3k images, 13.3k people with an ankle
+labelled), CMU foot keypoints (CC BY 4.0) on that subset, Open Images person boxes for a
+detector, and the project's own consented recordings. Details and counts are in the model
+card. The recordings also serve as goniometer validation data, and are the only source
+labelled with heel and toe the project fully controls.
+
+**Regulatory note (Canada).** Health Canada's SaMD classification examples list
+camera-based rehabilitation and active range-of-motion assessment software as **Class I**.
+Whether a Medical Device Establishment Licence is needed for App Store distribution is not
+settled here: "sell" includes free distribution, and the Class I manufacturer exemption
+applies only to selling solely to end users. This must be answered before public release.
+
+**Follow-ups.** The on-device pipeline (`app/modules/pose/`) is re-targeted at BlazePose.
+Its output keeps the COCO-WholeBody slot layout, so exercise definitions, the measurement
+pipeline and the schemas are unchanged; slots BlazePose lacks (small toes, face, hands) have
+score 0. Condition 2's amortisation now happens natively, as MediaPipe does it: the next ROI
+comes from the landmark model's auxiliary points, and the detector re-runs only when the pose
+is lost. Condition 5's 2D calibration is unchanged. The spike numbers for RTMPose remain
+valid as a research result; BlazePose's must be measured on device before any claim about
+frame rate is made for it.

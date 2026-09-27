@@ -14,7 +14,7 @@ public protocol HybridPoseSpec_protocol: HybridObject {
   
 
   // Methods
-  func run(frame: (any HybridFrameSpec), roi: [Double]?) throws -> PoseResult
+  func run(frame: (any HybridFrameSpec), forceDetect: Bool?) throws -> PoseResult
 }
 
 public extension HybridPoseSpec_protocol {

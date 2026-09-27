@@ -73,8 +73,8 @@ namespace margelo::nitro::pose {
 
   public:
     // Methods
-    inline PoseResult run(const std::shared_ptr<margelo::nitro::camera::HybridFrameSpec>& frame, const std::optional<std::vector<double>>& roi) override {
-      auto __result = _swiftPart.run(frame, roi);
+    inline PoseResult run(const std::shared_ptr<margelo::nitro::camera::HybridFrameSpec>& frame, std::optional<bool> forceDetect) override {
+      auto __result = _swiftPart.run(frame, forceDetect);
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }

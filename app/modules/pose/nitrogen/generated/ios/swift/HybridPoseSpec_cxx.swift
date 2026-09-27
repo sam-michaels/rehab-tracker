@@ -126,16 +126,16 @@ open class HybridPoseSpec_cxx {
 
   // Methods
   @inline(__always)
-  public final func run(frame: bridge.std__shared_ptr_margelo__nitro__camera__HybridFrameSpec_, roi: bridge.std__optional_std__vector_double__) -> bridge.Result_PoseResult_ {
+  public final func run(frame: bridge.std__shared_ptr_margelo__nitro__camera__HybridFrameSpec_, forceDetect: bridge.std__optional_bool_) -> bridge.Result_PoseResult_ {
     do {
       let __result = try self.__implementation.run(frame: { () -> any HybridFrameSpec in
         let __unsafePointer = bridge.get_std__shared_ptr_margelo__nitro__camera__HybridFrameSpec_(frame)
         let __instance = HybridFrameSpec_cxx.fromUnsafe(__unsafePointer)
         return __instance.getHybridFrameSpec()
-      }(), roi: { () -> [Double]? in
-        if bridge.has_value_std__optional_std__vector_double__(roi) {
-          let __unwrapped = bridge.get_std__optional_std__vector_double__(roi)
-          return __unwrapped.map({ __item in __item })
+      }(), forceDetect: { () -> Bool? in
+        if bridge.has_value_std__optional_bool_(forceDetect) {
+          let __unwrapped = bridge.get_std__optional_bool_(forceDetect)
+          return __unwrapped
         } else {
           return nil
         }
