@@ -4,7 +4,8 @@
 - **Answers:** ADR 0002, Condition 1 (spike deliverable) and Condition 2 (detector amortization)
 - **Verdict:** the pipeline meets the frame budget with headroom. Two Condition 1 items are
   **not yet answered** (compute-unit attribution for the detector; foot confidence on
-  barefoot footage), and ADR 0002 Condition 3 (checkpoint licensing) is still open.
+  barefoot footage). ADR 0002 Condition 3 (checkpoint licensing) was closed on 2026-09-25:
+  the weights are non-commercial research only ([model card](../MODEL_CARD.md)).
 
 ## Setup
 
@@ -130,7 +131,9 @@ measurement the MVP depends on — heel and toe tracking through a calf raise �
    `.cpuAndGPU` avoids the failure; it does not fix it, and Core ML may still schedule work on
    the CPU. Until then, CI cannot check pose (GitHub's macOS runners have no usable GPU), and
    the gate runs with `PARITY_SKIP=pose`.
-2. **Confirm checkpoint licensing (ADR 0002, C3) — blocking.** `manifest.json` records the
+2. ~~**Confirm checkpoint licensing (ADR 0002, C3) — blocking.**~~ **Closed 2026-09-25:**
+   both checkpoints are non-commercial research only, and no permissive WholeBody checkpoint
+   exists. See [ml/MODEL_CARD.md](../MODEL_CARD.md). Original item: `manifest.json` records the
    corpus as COCO-WholeBody + UBody (DWPose distillation). MMPose's Apache-2.0 does not
    transfer to weights, the weights are now published in release `v0-spike`, and the ADR makes
    this blocking for the README. If UBody's terms don't permit it, switch to a

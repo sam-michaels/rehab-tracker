@@ -35,6 +35,8 @@ from mmdet.structures.bbox import distance2bbox
 from mmpose.apis import init_model
 
 MMPOSE_HOME = Path("/opt/mmpose")
+# Licence terms follow the training corpora, not MMPose's Apache-2.0 (ADR 0002 C3).
+MODEL_CARD_URL = "https://github.com/sam-michaels/rehab-tracker/blob/main/ml/MODEL_CARD.md"
 
 DETECTOR = dict(
     name="rtmdet-nano-person-320-fp16",
@@ -43,6 +45,9 @@ DETECTOR = dict(
                     "rtmdet_nano_8xb32-100e_coco-obj365-person-05d8511e.pth",
     input_hw=(320, 320),
     training_corpus="COCO 2017 (person) + Objects365 (person subset)",
+    # Objects365 is "available for the academic purpose only"; see ml/MODEL_CARD.md.
+    license="LicenseRef-research-only",
+    license_url=MODEL_CARD_URL,
 )
 POSE = dict(
     name="rtmpose-s-wholebody-256x192-fp16",
@@ -52,8 +57,11 @@ POSE = dict(
                     "rtmpose-s_simcc-ucoco_dw-ucoco_270e-256x192-3fd922c8_20230728.pth",
     input_hw=(256, 192),
     # RTMPose-s only ships as this DWPose-distilled variant (COCO-WholeBody's plain
-    # aic-coco-pretrained checkpoints stop at -m); see final report re: licensing.
+    # aic-coco-pretrained checkpoints stop at -m). No swap makes this permissive: every
+    # WholeBody checkpoint uses COCO-WholeBody (non-commercial); see ml/MODEL_CARD.md.
     training_corpus="COCO-WholeBody + UBody (DWPose distillation)",
+    license="CC-BY-NC-SA-4.0",
+    license_url=MODEL_CARD_URL,
 )
 # Real photos, not synthetic noise: on a featureless/noisy image the top-1 argmax (no
 # clear peak) flips between PyTorch fp32 and Core ML fp16 on rounding alone, which
@@ -203,6 +211,8 @@ def convert_one(spec, wrapper_cls, build_model, out_dir, cache_dir):
         "checkpoint_url": spec["checkpoint_url"],
         "checkpoint_sha256": ckpt_sha256,
         "training_corpus": spec["training_corpus"],
+        "license": spec["license"],
+        "license_url": spec["license_url"],
         "config": Path(spec["config"]).name,
         "input_resolution_hw": list(spec["input_hw"]),
         "precision": "fp16" if wrapper_cls is DetectorWrapper else "fp16 (linear/matmul kept fp32)",

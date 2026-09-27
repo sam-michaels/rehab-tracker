@@ -40,4 +40,18 @@ ml/convert/fetch.sh <release-tag>
 ```
 
 Downloads the zipped `.mlpackage`s + manifest from a GitHub Release, verifies sha256,
-unpacks into `app/modules/pose/ios/models/`.
+unpacks into `app/modules/pose/ios/models/`. The weights are non-commercial research only
+(each manifest entry has `license` and `license_url` fields). See [../MODEL_CARD.md](../MODEL_CARD.md).
+
+## BlazePose (what the app ships)
+
+```sh
+ml/convert/fetch_blazepose.sh
+```
+
+Downloads MediaPipe's `pose_landmarker_full.task` from Google at a pinned version, verifies
+its sha256 and unpacks `pose_detector.tflite` + `pose_landmarks_detector.tflite` into
+`app/modules/pose/ios/models/`. There's no conversion: the app runs them with TensorFlow Lite.
+Only `*.tflite` from that directory goes into the app bundle, so the research `.mlpackage`s
+above never ship. The pre/post-processing reference is `ml/runners/blazepose.py`. Regenerate
+its fixtures with `ml/runners/make_blazepose_fixtures.py`, whose docstring has the command.
