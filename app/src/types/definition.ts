@@ -1,7 +1,10 @@
 // Hand-written mirrors of shared/schemas/*. No codegen (ADR 0008 C2): src/__tests__/schemas.test.ts
 // keeps these honest by validating the shared JSON files and type-checking them against these types.
 
-/** COCO-WholeBody keypoint index, 0–132. */
+/**
+ * COCO-WholeBody keypoint index, 0–132. The on-device model (BlazePose) fills the body and foot
+ * slots except the small toes (18, 21); see BlazePose.mpToWholeBody in app/modules/pose/ios/.
+ */
 export type Keypoint = number;
 export type Segment = [from: Keypoint, to: Keypoint];
 

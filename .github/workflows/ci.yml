@@ -26,6 +26,12 @@ jobs:
       - run: uv run --locked pytest
         working-directory: ml
 
+      # The app's BlazePose geometry (Swift) against the fixtures pytest just checked the Python
+      # reference against. Foundation only, so it builds with the runner's own swiftc.
+      - run: |
+          swiftc -O app/modules/pose/ios/BlazePoseGeometry.swift app/modules/pose/ios/check/main.swift -o "$RUNNER_TEMP/bp-check"
+          "$RUNNER_TEMP/bp-check" shared/fixtures/blazepose
+
   # Fetches the converted artifacts from a release and runs the parity gate (ADR 0006 C4)
   # on the actual Core ML models -- prediction needs macOS (ADR 0006 amendment). Requires
   # MODEL_RELEASE to name a release that already has the artifacts uploaded; conversion

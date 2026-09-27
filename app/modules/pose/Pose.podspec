@@ -1,7 +1,7 @@
 Pod::Spec.new do |s|
   s.name           = 'Pose'
   s.version        = '1.0.0'
-  s.summary        = 'vision-camera frame processor plugin: RTMDet-nano + RTMPose-WholeBody Core ML inference'
+  s.summary        = 'vision-camera frame processor plugin: MediaPipe BlazePose models via TensorFlow Lite, no MediaPipe SDK'
   s.author         = ''
   s.homepage       = 'https://docs.expo.dev/modules/'
   s.platforms      = { :ios => '17.0' }
@@ -9,6 +9,7 @@ Pod::Spec.new do |s|
   s.static_framework = true
 
   s.dependency 'VisionCamera'
+  s.dependency 'TensorFlowLiteSwift/Metal', '~> 2.17.0'
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',
@@ -18,12 +19,12 @@ Pod::Spec.new do |s|
   # adds the generated shared/ios sources itself and knows to skip Android.
   s.source_files = 'ios/*.swift'
 
-  # RTMDet-nano + RTMPose-s-WholeBody .mlpackage, placed manually (not in
-  # git, see ios/models/, gitignored). Xcode compiles
-  # .mlpackage -> .mlmodelc at build time (ADR 0006 C6) because it's a
-  # resource_bundle, not a plain source file.
+  # pose_detector.tflite + pose_landmarks_detector.tflite, placed by
+  # ml/convert/fetch_blazepose.sh (not in git; ios/models/ is gitignored). Only .tflite:
+  # the research RTMPose .mlpackages fetch.sh puts in the same directory are
+  # non-commercial and must not ship (ml/MODEL_CARD.md).
   s.resource_bundles = {
-    'Pose' => ['ios/models/*.mlpackage']
+    'Pose' => ['ios/models/*.tflite']
   }
 
   load File.join(__dir__, 'nitrogen/generated/ios/Pose+autolinking.rb')

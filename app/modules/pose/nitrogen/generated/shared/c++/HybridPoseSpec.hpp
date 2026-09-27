@@ -21,7 +21,6 @@ namespace margelo::nitro::camera { class HybridFrameSpec; }
 #include "PoseResult.hpp"
 #include <memory>
 #include <VisionCamera/HybridFrameSpec.hpp>
-#include <vector>
 #include <optional>
 
 namespace margelo::nitro::pose {
@@ -55,7 +54,7 @@ namespace margelo::nitro::pose {
 
     public:
       // Methods
-      virtual PoseResult run(const std::shared_ptr<margelo::nitro::camera::HybridFrameSpec>& frame, const std::optional<std::vector<double>>& roi) = 0;
+      virtual PoseResult run(const std::shared_ptr<margelo::nitro::camera::HybridFrameSpec>& frame, std::optional<bool> forceDetect) = 0;
 
     protected:
       // Hybrid Setup

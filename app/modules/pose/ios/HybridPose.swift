@@ -1,114 +1,134 @@
-import AVFoundation
-import CoreML
+import CoreImage
 import NitroModules
-import Vision
+import QuartzCore
+import TensorFlowLite
 import VisionCamera
 
-/// Normalized rect, top-left origin, [0,1] in the Frame buffer's coordinate
-/// space. This is the coordinate space of the plugin's public contract
-/// (`roi` param, `detBox`, and decoded keypoints) everywhere in this file
-/// EXCEPT where explicitly converted to Vision's own bottom-left-origin
-/// `regionOfInterest` just before a request is built.
-private struct NormRect {
-  var x: Double
-  var y: Double
-  var w: Double
-  var h: Double
-}
+/// The two .tflite models from MediaPipe's pose_landmarker_full.task, run directly: no
+/// MediaPipe SDK, because the SDK reports usage metrics to Google (ADR 0002, amendment
+/// 2026-09-25). Placed by ml/convert/fetch_blazepose.sh. Output tensors are addressed by
+/// name order (Identity, Identity_1, ...), which is how MediaPipe splits them too.
+private final class Models {
+  let detector: Interpreter
+  let landmarks: Interpreter
+  let detOut: [Int]  // indices of Identity (boxes), Identity_1 (scores)
+  let lmOut: [Int]  // Identity (landmarks), Identity_1 (flag), _2 (segmentation), _3 (heatmap), _4 (world)
 
-/// One loaded Core ML model, its reusable Vision request, and the pixel size Vision must scale
-/// its input to. Frames arrive one at a time on the camera thread, so mutating the shared
-/// request's `regionOfInterest` per frame is safe.
-private final class LoadedModel {
-  let request: VNCoreMLRequest
-  let inputSize: CGSize
-  init(vnModel: VNCoreMLModel, inputSize: CGSize, cropAndScale: VNImageCropAndScaleOption) {
-    request = VNCoreMLRequest(model: vnModel)
-    request.imageCropAndScaleOption = cropAndScale
-    self.inputSize = inputSize
+  init(bundle: Bundle) throws {
+    detector = try Models.load("pose_detector", bundle: bundle)
+    landmarks = try Models.load("pose_landmarks_detector", bundle: bundle)
+    detOut = try Models.outputOrder(detector)
+    lmOut = try Models.outputOrder(landmarks)
+  }
+
+  /// GPU (Metal, full precision) where the delegate accepts the graph, CPU otherwise.
+  private static func load(_ name: String, bundle: Bundle) throws -> Interpreter {
+    guard let path = bundle.path(forResource: name, ofType: "tflite") else {
+      throw RuntimeError.error(
+        withMessage:
+          "pose: model '\(name).tflite' not found in app bundle. Run ml/convert/fetch_blazepose.sh "
+          + "(unpacks it into app/modules/pose/ios/models/) and rebuild.")
+    }
+    var options = Interpreter.Options()
+    options.threadCount = 2
+    let interpreter =
+      try (try? Interpreter(modelPath: path, options: options, delegates: [MetalDelegate()]))
+      ?? Interpreter(modelPath: path, options: options)
+    try interpreter.allocateTensors()
+    return interpreter
+  }
+
+  private static func outputOrder(_ it: Interpreter) throws -> [Int] {
+    let names = try (0..<it.outputTensorCount).map { try it.output(at: $0).name }
+    return names.indices.sorted { names[$0] < names[$1] }
   }
 }
 
-/// `pose` frame processor plugin: RTMDet-nano person detector + RTMPose-s
-/// wholebody, both Core ML, both run through Vision so Vision does the
-/// crop/scale/YUV->RGB. See app/modules/pose/src/Pose.nitro.ts for the
-/// JS-facing contract.
+/// `pose` frame processor plugin: BlazePose detector -> rotated ROI crop -> landmark model,
+/// with MediaPipe's tracking (the next ROI comes from this frame's auxiliary landmarks; the
+/// detector re-runs only when the pose is lost; ADR 0002 C2). Geometry is in
+/// BlazePoseGeometry.swift. See app/modules/pose/src/Pose.nitro.ts for the JS-facing contract.
 public class HybridPose: HybridPoseSpec {
   private static let lock = NSLock()
-  private static var detectorModel: LoadedModel?
-  private static var poseModel: LoadedModel?
+  private static var models: Models?
 
-  private static let detectorName = "rtmdet-nano-person-320-fp16"
-  private static let poseName = "rtmpose-s-wholebody-256x192-fp16"
-  private static let detectorInputSize = CGSize(width: 320, height: 320)
-  private static let poseInputSize = CGSize(width: 192, height: 256)
-  private static let numKeypoints = 133
+  /// Tracking state. Frames arrive one at a time on the camera thread.
+  private var rect: PoseRect?
+  // No colour management: the models were trained on plain sRGB bytes.
+  private let ciContext = CIContext(options: [.workingColorSpace: NSNull(), .outputColorSpace: NSNull()])
+  private var cropBuffers: [Int: CVPixelBuffer] = [:]
+  private var tensorBuffers: [Int: [Float]] = [:]
 
   /// Loads both models off the JS thread at creation (app launch), so the first camera frame
-  /// doesn't stall on Core ML load / Neural Engine prep. The getters' lock makes this race-safe.
+  /// doesn't stall on interpreter/delegate setup. The getter's lock makes this race-safe.
   override public init() {
     super.init()
     DispatchQueue.global(qos: .userInitiated).async {
-      _ = try? HybridPose.getDetector()
-      _ = try? HybridPose.getPoseModel()
+      _ = try? HybridPose.getModels()
     }
   }
 
-  public func run(frame: any HybridFrameSpec, roi: [Double]?) throws -> PoseResult {
+  public func run(frame: any HybridFrameSpec, forceDetect: Bool?) throws -> PoseResult {
     guard let nativeFrame = frame as? NativeFrame,
       let sampleBuffer = nativeFrame.sampleBuffer,
       let pixelBuffer = sampleBuffer.imageBuffer
     else {
       throw RuntimeError.error(withMessage: "pose: Frame has no CVPixelBuffer")
     }
-    let orientation = HybridPose.cgOrientation(for: frame.orientation)
+    let m = try HybridPose.getModels()
+    // The upright image, origin at 0,0: every coordinate in the contract refers to it.
+    let oriented = CIImage(cvPixelBuffer: pixelBuffer).oriented(HybridPose.cgOrientation(for: frame.orientation))
+    let image = oriented.transformed(
+      by: CGAffineTransform(translationX: -oriented.extent.minX, y: -oriented.extent.minY))
+    let width = Double(image.extent.width), height = Double(image.extent.height)
 
-    var detBox: NormRect?
+    var detBox: [Double]?
     var detScore: Double?
     var detMs: Double?
-    let poseROI: NormRect
-
-    // Upright width/height in pixels (Vision applies the orientation), same as App.tsx.
-    let sideways = frame.orientation == .left || frame.orientation == .right
-    let aspect = sideways ? frame.height / frame.width : frame.width / frame.height
-
-    if let roi = roi {
-      guard roi.count == 4 else {
-        throw RuntimeError.error(withMessage: "pose: roi must be [x,y,w,h], got \(roi.count) values")
-      }
-      // Tracker ROIs may extend past the frame edge; Vision rejects those.
-      poseROI = HybridPose.clampToFrame(NormRect(x: roi[0], y: roi[1], w: roi[2], h: roi[3]))
-    } else {
+    if forceDetect == true || rect == nil {
       let start = CACurrentMediaTime()
-      let (box, score) = try HybridPose.runDetector(
-        pixelBuffer: pixelBuffer, orientation: orientation, frameAspect: aspect)
+      let input = tensor(
+        image, BlazePose.detectorRect(width: width, height: height), size: BlazePose.detSize, range: (-1, 1))
+      try m.detector.copy(input, toInputAt: 0)
+      try m.detector.invoke()
+      let found = BlazePose.bestDetection(
+        rawBoxes: try floats(m.detector, m.detOut[0]), rawScores: try floats(m.detector, m.detOut[1]))
       detMs = (CACurrentMediaTime() - start) * 1000
-      detBox = box
-      detScore = score
-      poseROI = HybridPose.expandToPoseROI(box, frameAspect: aspect)
+      guard let d = found else {
+        rect = nil
+        return HybridPose.empty(detScore: 0, detMs: detMs)
+      }
+      detScore = d.score
+      let p0 = BlazePose.unletterbox((d.box[0], d.box[1]), width: width, height: height)
+      let p1 = BlazePose.unletterbox((d.box[2], d.box[3]), width: width, height: height)
+      detBox = [p0.0, p0.1, p1.0 - p0.0, p1.1 - p0.1]
+      rect = BlazePose.rectFromDetection(d, width: width, height: height)
     }
+    guard let roi = rect else { return HybridPose.empty(detScore: detScore, detMs: detMs) }
 
     let poseStart = CACurrentMediaTime()
-    let (keypoints, scores) = try HybridPose.runPose(
-      pixelBuffer: pixelBuffer, orientation: orientation, roi: poseROI)
+    try m.landmarks.copy(tensor(image, roi, size: BlazePose.lmSize, range: (0, 1)), toInputAt: 0)
+    try m.landmarks.invoke()
+    let lms = BlazePose.decodeLandmarks(
+      raw: try floats(m.landmarks, m.lmOut[0]), flag: try floats(m.landmarks, m.lmOut[1])[0],
+      heatmap: try floats(m.landmarks, m.lmOut[3]), rect: roi)
     let poseMs = (CACurrentMediaTime() - poseStart) * 1000
 
+    guard lms.presence >= BlazePose.posePresence else {
+      rect = nil  // lost: re-detect on the next frame
+      return HybridPose.empty(detScore: detScore, detMs: detMs, poseMs: poseMs)
+    }
+    rect = BlazePose.rectFromLandmarks(lms, width: width, height: height)
+    let (keypoints, scores) = BlazePose.toWholeBody(lms)
     return PoseResult(
-      keypoints: keypoints,
-      scores: scores,
-      detBox: detBox.map { [$0.x, $0.y, $0.w, $0.h] },
-      detScore: detScore,
-      detMs: detMs,
-      poseMs: poseMs
-    )
+      keypoints: keypoints, scores: scores, detBox: detBox, detScore: detScore, detMs: detMs, poseMs: poseMs)
   }
 
-  // MARK: - Model loading
+  // MARK: - Models
 
-  /// Compiled models live in the "Pose.bundle" resource bundle CocoaPods
-  /// produces from ios/models/*.mlpackage (Xcode compiles .mlpackage ->
-  /// .mlmodelc at build time). Falls back to the framework bundle itself in
-  /// case resource_bundles isn't used by the consuming project's linkage mode.
+  /// Models live in the "Pose.bundle" resource bundle CocoaPods produces from
+  /// ios/models/*.tflite. Falls back to the framework bundle itself in case resource_bundles
+  /// isn't used by the consuming project's linkage mode.
   private static func resourceBundle() -> Bundle {
     let frameworkBundle = Bundle(for: HybridPose.self)
     if let url = frameworkBundle.url(forResource: "Pose", withExtension: "bundle"),
@@ -119,150 +139,80 @@ public class HybridPose: HybridPoseSpec {
     return frameworkBundle
   }
 
-  private static func loadModel(
-    name: String, inputSize: CGSize, cropAndScale: VNImageCropAndScaleOption,
-    computeUnits: MLComputeUnits
-  ) throws -> LoadedModel {
-    guard let url = resourceBundle().url(forResource: name, withExtension: "mlmodelc") else {
-      throw RuntimeError.error(
-        withMessage:
-          "pose: compiled model '\(name).mlmodelc' not found in app bundle. "
-          + "Place \(name).mlpackage at app/modules/pose/ios/models/ and rebuild "
-          + "(Xcode compiles .mlpackage -> .mlmodelc at build time).")
-    }
-    let config = MLModelConfiguration()
-    config.computeUnits = computeUnits
-    let mlModel = try MLModel(contentsOf: url, configuration: config)
-    let vnModel = try VNCoreMLModel(for: mlModel)
-    return LoadedModel(vnModel: vnModel, inputSize: inputSize, cropAndScale: cropAndScale)
-  }
-
-  private static func getDetector() throws -> LoadedModel {
+  private static func getModels() throws -> Models {
     lock.lock()
     defer { lock.unlock() }
-    if let m = detectorModel { return m }
-    // Letterbox: RTMDet was trained aspect-preserved; squashing a 9:16 frame into 320x320
-    // narrows people ~1.8x and lets furniture outscore them.
-    let m = try loadModel(name: detectorName, inputSize: detectorInputSize, cropAndScale: .scaleFit, computeUnits: .all)
-    detectorModel = m
+    if let m = models { return m }
+    let m = try Models(bundle: resourceBundle())
+    models = m
     return m
   }
 
-  private static func getPoseModel() throws -> LoadedModel {
-    lock.lock()
-    defer { lock.unlock() }
-    if let m = poseModel { return m }
-    // The pose ROI is already fitted to the model's 3:4 in pixels, so fill is exact.
-    // No Neural Engine: it computes FP16 only, which ignores the head ops convert.py pins to
-    // FP32 and overflows them -- body keypoints collapse to argmax (191.5, 0) on device.
-    let m = try loadModel(
-      name: poseName, inputSize: poseInputSize, cropAndScale: .scaleFill, computeUnits: .cpuAndGPU)
-    poseModel = m
-    return m
+  private func floats(_ it: Interpreter, _ index: Int) throws -> [Float] {
+    try it.output(at: index).data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
   }
 
-  // MARK: - Inference
+  // MARK: - Crop
 
-  private static func runDetector(
-    pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation, frameAspect: Double
-  ) throws -> (NormRect, Double) {
-    let model = try getDetector()
-    let request = model.request
-    let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
-    try handler.perform([request])
+  /// Samples `rect` of the upright image into a size x size RGB float tensor scaled to `range`,
+  /// zero outside the image. Same mapping as crop() in ml/runners/blazepose.py: output pixel
+  /// centre (u + 0.5) / size goes through the rect's rotation, the inverse of
+  /// BlazePose.project. Core Image is bottom-left origin, so y is flipped on both sides.
+  private func tensor(_ image: CIImage, _ rect: PoseRect, size: Int, range: (Float, Float)) -> Data {
+    let w = Double(image.extent.width), h = Double(image.extent.height), n = Double(size)
+    let sx = rect.w * w, sy = rect.h * h
+    let c = cos(rect.rotation), s = sin(rect.rotation)
+    // Output (Core Image coords) -> source (Core Image coords).
+    let toSource = CGAffineTransform(
+      a: sx * c / n, b: -sy * s / n, c: sx * s / n, d: sy * c / n,
+      tx: w * rect.cx - sx * (c + s) / 2, ty: h - h * rect.cy + sy * (s - c) / 2)
+    let bounds = CGRect(x: 0, y: 0, width: size, height: size)
+    // Plain bilinear, as the reference and MediaPipe sample. Core Image's default prefilters
+    // big downscales (a camera frame -> 224 is ~8x), which moved crops up to 120/255 off.
+    // Over black: Core Image only writes where the image has pixels, and the buffer is reused,
+    // so padding (the detector's letterbox, ROIs past the frame edge) would keep old frames.
+    let crop = image.transformed(by: toSource.inverted(), highQualityDownsample: false)
+      .composited(over: CIImage(color: .black)).cropped(to: bounds)
 
-    guard let box = featureValue(request.results, named: "box"), box.count == 4,
-      let score = featureValue(request.results, named: "score"), score.count >= 1
-    else {
-      throw RuntimeError.error(withMessage: "pose: detector output missing 'box'/'score'")
+    let buffer = cropBuffer(size)
+    ciContext.render(crop, to: buffer, bounds: bounds, colorSpace: nil)
+
+    var out = tensorBuffers[size] ?? [Float](repeating: 0, count: size * size * 3)
+    let scale = (range.1 - range.0) / 255, offset = range.0
+    CVPixelBufferLockBaseAddress(buffer, .readOnly)
+    let base = CVPixelBufferGetBaseAddress(buffer)!.assumingMemoryBound(to: UInt8.self)
+    let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+    for y in 0..<size {
+      let row = base + y * rowBytes
+      for x in 0..<size {
+        let px = row + x * 4, o = (y * size + x) * 3  // BGRA -> RGB
+        out[o] = Float(px[2]) * scale + offset
+        out[o + 1] = Float(px[1]) * scale + offset
+        out[o + 2] = Float(px[0]) * scale + offset
+      }
     }
-    // box is xyxy in the detector's 320x320 input px (top-left origin raster space). Under
-    // .scaleFit the frame occupies a centered (cw x ch) fraction of the input; undo the padding.
-    let cw = min(1, frameAspect), ch = min(1, 1 / frameAspect)
-    func unpad(_ v: Double, _ size: CGFloat, _ c: Double) -> Double {
-      min(1, max(0, (v / Double(size) - (1 - c) / 2) / c))
-    }
-    let size = model.inputSize
-    let x0 = unpad(box[0].doubleValue, size.width, cw), y0 = unpad(box[1].doubleValue, size.height, ch)
-    let x1 = unpad(box[2].doubleValue, size.width, cw), y1 = unpad(box[3].doubleValue, size.height, ch)
-    return (NormRect(x: x0, y: y0, w: x1 - x0, h: y1 - y0), score[0].doubleValue)
+    CVPixelBufferUnlockBaseAddress(buffer, .readOnly)
+    tensorBuffers[size] = out
+    return out.withUnsafeBufferPointer { Data(buffer: $0) }
   }
 
-  private static func runPose(
-    pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation, roi: NormRect
-  ) throws -> ([Double], [Double]) {
-    let model = try getPoseModel()
-    let request = model.request
-    request.regionOfInterest = visionROI(from: roi)
-    let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:])
-    try handler.perform([request])
-
-    guard let kp = featureValue(request.results, named: "keypoints"), kp.count == numKeypoints * 2,
-      let sc = featureValue(request.results, named: "scores"), sc.count == numKeypoints
-    else {
-      throw RuntimeError.error(withMessage: "pose: pose model output missing 'keypoints'/'scores'")
-    }
-
-    // One strided copy each into logical row-major order (handles ANE-padded strides and FP16),
-    // instead of an NSNumber-boxed subscript per element.
-    let kpFlat = MLShapedArray<Float>(converting: kp).scalars
-    var keypoints = [Double](repeating: 0, count: numKeypoints * 2)
-    for i in 0..<numKeypoints {
-      let mapped = mapModelPointToFrame(
-        x: Double(kpFlat[2 * i]), y: Double(kpFlat[2 * i + 1]), inputSize: model.inputSize, roi: roi)
-      keypoints[i * 2] = mapped.0
-      keypoints[i * 2 + 1] = mapped.1
-    }
-    let scores = MLShapedArray<Float>(converting: sc).scalars.map(Double.init)
-    return (keypoints, scores)
+  private func cropBuffer(_ size: Int) -> CVPixelBuffer {
+    if let b = cropBuffers[size] { return b }
+    var b: CVPixelBuffer?
+    CVPixelBufferCreate(
+      nil, size, size, kCVPixelFormatType_32BGRA,
+      [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &b)
+    cropBuffers[size] = b!
+    return b!
   }
 
-  // MARK: - Geometry
+  // MARK: - Helpers
 
-  /// Vision's `regionOfInterest` is normalized [0,1] with BOTTOM-LEFT origin.
-  /// Our `roi` (and every other coordinate in this plugin) is top-left origin.
-  private static func visionROI(from r: NormRect) -> CGRect {
-    // Keep off the exact frame edge: Vision re-derives the rect for the buffer orientation and
-    // an edge-touching ROI can land at -1e-17, which it rejects. 1e-6 of the frame is invisible.
-    CGRect(x: r.x, y: 1 - r.y - r.h, width: r.w, height: r.h)
-      .intersection(CGRect(x: 0, y: 0, width: 1, height: 1).insetBy(dx: 1e-6, dy: 1e-6))
-  }
-
-  /// Shifts `r` inside the frame, keeping its size (and so its aspect) where it fits.
-  private static func clampToFrame(_ r: NormRect) -> NormRect {
-    let w = min(r.w, 1.0)
-    let h = min(r.h, 1.0)
-    return NormRect(x: max(0, min(r.x, 1 - w)), y: max(0, min(r.y, 1 - h)), w: w, h: h)
-  }
-
-  /// Maps a point in a model's raster input px (top-left origin, within
-  /// `inputSize`) back to normalized top-left-origin frame coordinates,
-  /// given the (top-left-origin, normalized) ROI Vision cropped/scaled from.
-  private static func mapModelPointToFrame(
-    x: Double, y: Double, inputSize: CGSize, roi: NormRect
-  ) -> (Double, Double) {
-    let nx = x / Double(inputSize.width)
-    let ny = y / Double(inputSize.height)
-    return (roi.x + nx * roi.w, roi.y + ny * roi.h)
-  }
-
-  /// Expands a detector box to the pose model's 3:4 (w:h) aspect with 1.25x
-  /// padding around its center, clamped to stay inside the frame. The aspect is fitted in
-  /// pixels (H = 1, W = frameAspect), not normalized units: the frame isn't square, and a
-  /// normalized 3:4 crop reaches the model stretched. Mirrors roiFromKeypoints in tracker.ts.
-  private static func expandToPoseROI(_ box: NormRect, frameAspect: Double) -> NormRect {
-    let cx = (box.x + box.w / 2) * frameAspect
-    let cy = box.y + box.h / 2
-    var w = box.w * frameAspect * 1.25
-    var h = box.h * 1.25
-    let targetAspect = 3.0 / 4.0  // w:h
-    if w / h < targetAspect {
-      w = h * targetAspect
-    } else {
-      h = w / targetAspect
-    }
-    return clampToFrame(
-      NormRect(x: (cx - w / 2) / frameAspect, y: cy - h / 2, w: w / frameAspect, h: h))
+  private static func empty(detScore: Double?, detMs: Double?, poseMs: Double = 0) -> PoseResult {
+    PoseResult(
+      keypoints: [Double](repeating: 0, count: BlazePose.numWholeBody * 2),
+      scores: [Double](repeating: 0, count: BlazePose.numWholeBody),
+      detBox: nil, detScore: detScore, detMs: detMs, poseMs: poseMs)
   }
 
   private static func cgOrientation(for o: CameraOrientation) -> CGImagePropertyOrientation {
@@ -272,13 +222,5 @@ public class HybridPose: HybridPoseSpec {
     case .down: return .down
     case .left: return .left
     }
-  }
-
-  private static func featureValue(_ results: [VNObservation]?, named name: String) -> MLMultiArray? {
-    guard let results = results else { return nil }
-    for case let obs as VNCoreMLFeatureValueObservation in results where obs.featureName == name {
-      return obs.featureValue.multiArrayValue
-    }
-    return nil
   }
 }

@@ -5,13 +5,14 @@ import { Button, StyleSheet, Text, View } from 'react-native';
 import { Camera, useCameraPermission, useFrameOutput, type Frame } from 'react-native-vision-camera';
 import { scheduleOnRN } from 'react-native-worklets';
 import { pose } from './modules/pose/src';
-import { meanBodyScore, nextRoi, type Mode, type Roi } from './src/pose/tracker';
+import { meanBodyScore, type Mode } from './src/pose/tracker';
 import { createStats, pushSample, summary, type Summary } from './src/pose/stats';
 import { OneEuro } from './src/pipeline/measure';
 
-// COCO-WholeBody: 11-16 hips/knees/ankles, 17-22 feet (big toe, small toe, heel per side).
-const LEG = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22];
-const FOOT = [17, 18, 19, 20, 21, 22];
+// COCO-WholeBody slots: 11-16 hips/knees/ankles, 17/20 big toe (BlazePose foot index),
+// 19/22 heel. BlazePose has no small toes (18/21), so they're left out.
+const LEG = [11, 12, 13, 14, 15, 16, 17, 19, 20, 22];
+const FOOT = [17, 19, 20, 22];
 // Overlay smoothing (the pipeline's One Euro, per coordinate). Tuning knob: these are for
 // normalized 0-1 coords at ~10 Hz, not the definition's degrees. Lower minCutoff = steadier
 // at rest; higher beta = less lag when moving.
@@ -22,15 +23,15 @@ interface View_ {
   points: number[]; // x,y pairs for LEG, normalized upright-image coords
   scores: number[];
   footConf: number;
-  bodyConf: number; // mean body+foot score; < 0.3 -> model output is noise (it always emits keypoints), hide dots
+  bodyConf: number; // mean body+foot score; < 0.3 -> nobody (or nothing reliable) in view, hide dots
   detScore: number; // last detector confidence
-  box: number[] | null; // current pose crop [x,y,w,h] (or detector box), display coords
+  box: number[] | null; // this frame's detector (face) box [x,y,w,h], display coords; null when it didn't run
   aspect: number; // upright width / height
   stats: Summary;
 }
 
 // Worklet-runtime state lives on globalThis: closures captured by worklets are copies.
-declare const globalThis: { __spike?: { roi: Roi | null; stats: ReturnType<typeof createStats>; n: number; det: number; box: number[] | null } };
+declare const globalThis: { __spike?: { stats: ReturnType<typeof createStats>; n: number; det: number; box: number[] | null } };
 
 export default function App() {
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -52,25 +53,25 @@ export default function App() {
   const onFrame = useCallback(
     (frame: Frame) => {
       'worklet';
-      const s = (globalThis.__spike ??= { roi: null, stats: createStats(), n: 0, det: 0, box: null });
+      const s = (globalThis.__spike ??= { stats: createStats(), n: 0, det: 0, box: null });
       try {
-        const redetect = s.roi === null;
-        const r = pose(frame, s.roi);
-        // Vision applies the frame orientation, so outputs are in the upright image.
+        const r = pose(frame, mode === 'A');
+        // The plugin applies the frame orientation, so outputs are in the upright image.
         const sideways = frame.orientation === 'left' || frame.orientation === 'right';
         const aspect = sideways ? frame.height / frame.width : frame.width / frame.height;
-        s.roi = nextRoi(mode, r, aspect);
         if (r.detScore !== undefined) s.det = r.detScore;
-        // Draw the crop the pose model tracks with (current), falling back to the detector box.
-        const b = s.roi ?? r.detBox ?? null;
-        s.box = b && frame.isMirrored ? [1 - b[0] - b[2], b[1], b[2], b[3]] : b;
-        pushSample(s.stats, { ts: Date.now() / 1000, poseMs: r.poseMs, detMs: r.detMs, redetected: redetect });
+        // The front preview is mirrored; isMirrored says whether the *buffer* is
+        // (connection.isVideoMirrored), so the overlay flips when the two differ.
+        const mx = (facing === 'front') !== frame.isMirrored;
+        // BlazePose's detector box is the face, not the body. Only shown on frames the detector
+        // ran and found someone: holding it would leave a stale box while tracking (mode B).
+        const b = r.detBox;
+        s.box = b ? (mx ? [1 - b[0] - b[2], b[1], b[2], b[3]] : b) : null;
+        pushSample(s.stats, { ts: Date.now() / 1000, poseMs: r.poseMs, detMs: r.detMs, redetected: r.detMs !== undefined });
         if (++s.n % 3 === 0) {
           const points: number[] = [];
           const scores: number[] = [];
           let foot = 0;
-          // Front camera: the preview is mirrored but the buffer (and so the keypoints) isn't.
-          const mx = frame.isMirrored;
           for (const i of LEG) {
             const x = r.keypoints[2 * i];
             points.push(mx ? 1 - x : x, r.keypoints[2 * i + 1]), scores.push(r.scores[i]);
@@ -82,7 +83,7 @@ export default function App() {
         frame.dispose();
       }
     },
-    [mode, showView],
+    [mode, facing, showView],
   );
   const frameOutput = useFrameOutput({ onFrame, onFrameDropped: () => void dropped.current++ });
 
